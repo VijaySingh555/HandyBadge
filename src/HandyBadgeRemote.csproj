@@ -5,8 +5,8 @@
     <LangVersion>7.3</LangVersion>
     <RootNamespace>HandyBadgeRemote</RootNamespace>
     <!-- Version is in the file name: bump this, AppInfo.Version and <Version> together on every build -->
-    <AssemblyName>HandyBadgeRemote-v0_1</AssemblyName>
-    <Version>0.1.0</Version>
+    <AssemblyName>HandyBadgeRemote-v0_2</AssemblyName>
+    <Version>0.2.0</Version>
     <Product>HandyBadge Remote</Product>
     <Description>Turns swipes on a HandyBadge-managed badge into key presses</Description>
     <ApplicationIcon>app.ico</ApplicationIcon>
@@ -19,6 +19,7 @@
   <ItemGroup>
     <Reference Include="System.Windows.Forms" />
     <Reference Include="System.Drawing" />
+    <Reference Include="Microsoft.CSharp" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />

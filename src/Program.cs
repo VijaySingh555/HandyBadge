@@ -7,7 +7,7 @@ namespace HandyBadgeRemote
     static class AppInfo
     {
         public const string Name = "HandyBadge Remote";
-        public const string Version = "0.1";
+        public const string Version = "0.2";
         public const string BuildDate = "23 November 2026";
     }
 

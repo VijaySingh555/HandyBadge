@@ -25,6 +25,12 @@ namespace HandyBadgeRemote
         GattDeviceService svc;
         GattCharacteristic wc, nc;
         TaskCompletionSource<Packet> pendingFaces;
+        int chunk = 20;           // GATT write size; raised to the negotiated maximum on connect
+        bool stopping;
+
+        public bool Previewing { get; private set; }
+        public event Action<int> ControlEvent;   // on-screen control (module 0x1C), e.g. 2 = shutter
+        public event Action PreviewEnded;        // the badge left live mode by itself
 
         public bool Connected { get; private set; }
         public string Name { get; private set; }
@@ -93,6 +99,9 @@ namespace HandyBadgeRemote
             var st = await nc.WriteClientCharacteristicConfigurationDescriptorAsync(cccd).AsTask();
             if (st != GattCommunicationStatus.Success) throw new Exception("Couldn't subscribe to the badge (" + st + ")");
 
+            chunk = 20;
+            try { if (session != null && session.MaxPduSize > 23) chunk = Math.Min(244, session.MaxPduSize - 3); } catch { }
+            Log.Write("Write size " + chunk + " bytes");
             dev.ConnectionStatusChanged += OnConnectionStatusChanged;
             Address = address;
             Name = string.IsNullOrEmpty(dev.Name) ? "Badge" : dev.Name;
@@ -126,6 +135,17 @@ namespace HandyBadgeRemote
             {
                 WriteAsync(Proto.AckFor(p), "ack").ContinueWith(t => Log.Write("Ack failed: " + t.Exception.GetBaseException().Message), TaskContinuationOptions.OnlyOnFaulted);
             }
+            if (p.Module == 0x1c)
+            {
+                Log.Write("Badge control: action " + p.Cmd + (p.Cmd == 2 ? " (shutter)" : ""));
+                var h = ControlEvent; if (h != null && p.IsCd) h(p.Cmd);
+            }
+            if (p.IsCd && p.Module == 0x27 && p.Cmd == 0x01 && Previewing && !stopping)
+            {
+                Log.Write("Badge left live mode");
+                Previewing = false;
+                var h = PreviewEnded; if (h != null) h();
+            }
             if (p.IsCd && p.Module == Proto.ModFaceReply && p.Cmd == Proto.CmdFaces && pendingFaces != null)
                 pendingFaces.TrySetResult(p);
         }
@@ -136,21 +156,75 @@ namespace HandyBadgeRemote
             try
             {
                 if (wc == null) throw new InvalidOperationException("Not connected");
-                Log.Write("-> " + Log.Hex(data) + "  " + label);
+                if (data.Length > 64) Log.Write("-> " + Log.Hex(Proto.Head(data, 16)) + " … (" + data.Length + " bytes)  " + label);
+                else Log.Write("-> " + Log.Hex(data) + "  " + label);
                 var opt = (wc.CharacteristicProperties & GattCharacteristicProperties.Write) != 0
                     ? GattWriteOption.WriteWithResponse : GattWriteOption.WriteWithoutResponse;
-                for (int off = 0; off < data.Length; off += 20)
+                int off = 0;
+                while (off < data.Length)
                 {
-                    int n = Math.Min(20, data.Length - off);
+                    int n = Math.Min(chunk, data.Length - off);
                     var part = new byte[n];
                     Array.Copy(data, off, part, 0, n);
                     var w = new DataWriter();
                     w.WriteBytes(part);
-                    var st = await wc.WriteValueAsync(w.DetachBuffer(), opt).AsTask();
-                    if (st != GattCommunicationStatus.Success) throw new Exception("Write failed (" + st + ")");
+                    GattCommunicationStatus st;
+                    try { st = await wc.WriteValueAsync(w.DetachBuffer(), opt).AsTask(); }
+                    catch (Exception e) { if (chunk > 20) { StepDown(e.Message); continue; } throw; }
+                    if (st != GattCommunicationStatus.Success)
+                    {
+                        if (chunk > 20) { StepDown(st.ToString()); continue; }
+                        throw new Exception("Write failed (" + st + ")");
+                    }
+                    off += n;
                 }
             }
             finally { writeLock.Release(); }
+        }
+
+        void StepDown(string why)
+        {
+            int next = chunk > 180 ? 180 : chunk > 128 ? 128 : 20;
+            Log.Write("Write of " + chunk + " bytes refused (" + why + "), trying " + next);
+            chunk = next;
+        }
+
+        // ---- Live screen ("real-time preview", module 0x27), as HandyBadge ----
+        public async Task StartPreviewAsync()
+        {
+            stopping = false;
+            await WriteAsync(new byte[] { 0xcd, 0, 6, 0x12, 1, 0x0c, 0, 1, 1 }, "enable preview mode");
+            await WriteAsync(new byte[] { 0xcd, 0, 5, 0x27, 1, 0x00, 0x00, 0, 0 }, "preview start");
+            Previewing = true;
+        }
+
+        public static byte[] WrapFrame(byte[] jpeg)
+        {
+            int L = jpeg.Length;
+            var o = new byte[6 + 4 + L + 6];
+            new byte[] { 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff }.CopyTo(o, 0);
+            o[6] = (byte)(L >> 24); o[7] = (byte)(L >> 16); o[8] = (byte)(L >> 8); o[9] = (byte)L;
+            jpeg.CopyTo(o, 10);
+            new byte[] { 0xff, 0xee, 0xdd, 0xcc, 0xbb, 0xaa }.CopyTo(o, 10 + L);
+            return o;
+        }
+
+        public Task SendFrameAsync(byte[] jpeg)
+        {
+            if (!Previewing) return Task.FromResult(0);
+            return WriteAsync(WrapFrame(jpeg), "preview frame (" + jpeg.Length + " B)");
+        }
+
+        public async Task StopPreviewAsync()
+        {
+            if (!Previewing) return;
+            stopping = true;
+            Previewing = false;
+            try { await WriteAsync(new byte[] { 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0, 0, 0, 0, 0xff, 0xee, 0xdd, 0xcc, 0xbb, 0xaa }, "preview end frame"); } catch { }
+            try { await WriteAsync(new byte[] { 0xcd, 0, 6, 0x27, 1, 0x01, 0, 1, 0 }, "preview stop"); } catch { }
+            try { await WriteAsync(new byte[] { 0xcd, 0, 6, 0x12, 1, 0x0c, 0, 1, 0 }, "disable preview mode"); } catch { }
+            await Task.Delay(300);
+            stopping = false;
         }
 
         // Asks for the stored faces and returns the active image's footprint. Throws TimeoutException if the badge doesn't answer.
@@ -167,7 +241,7 @@ namespace HandyBadgeRemote
 
         public void Close()
         {
-            Connected = false;
+            Connected = false; Previewing = false;
             try { if (nc != null) nc.ValueChanged -= OnValueChanged; } catch { }
             try { if (dev != null) dev.ConnectionStatusChanged -= OnConnectionStatusChanged; } catch { }
             try { if (svc != null) svc.Dispose(); } catch { }

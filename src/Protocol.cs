@@ -30,6 +30,8 @@ namespace HandyBadgeRemote
             return p;
         }
 
+        public static byte[] Head(byte[] b, int n) { var h = new byte[Math.Min(n, b.Length)]; Array.Copy(b, h, h.Length); return h; }
+
         public static byte[] AckFor(Packet p)
         {
             int L = p.Raw.Length;

@@ -4,6 +4,7 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Drawing;
 
 namespace HandyBadgeRemote
 {
@@ -19,6 +20,12 @@ namespace HandyBadgeRemote
         public bool Paused;
         public List<int> Ring = new List<int>(); // footprints in swipe-right order
         public bool Calibrated;
+        // Streaming (v0.2)
+        public int StreamFps = 3;            // 1-5 frames per second
+        public int StreamQuality = 40;       // JPEG quality 10-90
+        public int KeepAliveMs = 2000;       // resend the frame this often when nothing changes
+        public string ShutterKey = "Right";  // key the shutter tap sends in Region mode (and Presenter without PowerPoint)
+        public Rectangle StreamRegion = Rectangle.Empty;
 
         public static string Folder
         {
@@ -51,6 +58,16 @@ namespace HandyBadgeRemote
                         case "swapkeys": s.SwapKeys = IsTrue(v); break;
                         case "paused": s.Paused = IsTrue(v); break;
                         case "calibrated": s.Calibrated = IsTrue(v); break;
+                        case "streamfps": int f; if (int.TryParse(v, out f)) s.StreamFps = Math.Max(1, Math.Min(5, f)); break;
+                        case "streamquality": int q; if (int.TryParse(v, out q)) s.StreamQuality = Math.Max(10, Math.Min(90, q)); break;
+                        case "keepalivems": int ka; if (int.TryParse(v, out ka)) s.KeepAliveMs = Math.Max(500, Math.Min(30000, ka)); break;
+                        case "shutterkey": s.ShutterKey = v; break;
+                        case "streamregion":
+                            var parts = v.Split(',');
+                            int rx, ry, rs;
+                            if (parts.Length == 3 && int.TryParse(parts[0], out rx) && int.TryParse(parts[1], out ry) && int.TryParse(parts[2], out rs) && rs >= 40)
+                                s.StreamRegion = new Rectangle(rx, ry, rs, rs);
+                            break;
                         case "ring":
                             s.Ring = v.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries)
                                 .Select(x => { int n; return int.TryParse(x.Trim(), out n) ? n : 0; })
@@ -81,6 +98,12 @@ namespace HandyBadgeRemote
                 sb.AppendLine("Paused=" + (Paused ? "true" : "false"));
                 sb.AppendLine("# How often to check the badge, in milliseconds (200-5000)");
                 sb.AppendLine("PollMs=" + PollMs);
+                sb.AppendLine("# Streaming: frames per second (1-5), JPEG quality (10-90), keep-alive in ms, and the key the shutter tap sends in Region mode");
+                sb.AppendLine("StreamFps=" + StreamFps);
+                sb.AppendLine("StreamQuality=" + StreamQuality);
+                sb.AppendLine("KeepAliveMs=" + KeepAliveMs);
+                sb.AppendLine("ShutterKey=" + ShutterKey);
+                sb.AppendLine("StreamRegion=" + (StreamRegion.IsEmpty ? "" : StreamRegion.X + "," + StreamRegion.Y + "," + StreamRegion.Width));
                 sb.AppendLine("# Set by the app. Delete these lines to forget the badge and calibration.");
                 sb.AppendLine("LastAddress=" + LastAddress.ToString("X12"));
                 sb.AppendLine("Ring=" + string.Join(",", Ring));
